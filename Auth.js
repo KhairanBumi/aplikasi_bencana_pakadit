@@ -1,119 +1,130 @@
 import React, { useState } from 'react';
-import { Alert, StyleSheet, View, Text, TextInput, TouchableOpacity, KeyboardAvoidingView, Platform, ActivityIndicator } from 'react-native';
+import { View, Text, TextInput, TouchableOpacity, StyleSheet, ActivityIndicator } from 'react-native';
 import { supabase } from './supabase';
 
 export default function Auth() {
-  const [isLogin, setIsLogin] = useState(true);
-  const [loading, setLoading] = useState(false);
-  const [email, setEmail] = useState('');
+  const [nama, setNama] = useState('');
   const [password, setPassword] = useState('');
-  const [name, setName] = useState('');
-  const [role, setRole] = useState('Relawan'); // Relawan atau Penerima
+  const [loading, setLoading] = useState(false);
+  const [pesan, setPesan] = useState('');
+  
+  // State baru untuk mengatur tampilan layar (Login atau Register)
+  const [isLoginMode, setIsLoginMode] = useState(true);
 
-  // Fungsi Login Supabase
-  async function signInWithEmail() {
+  const formatEmail = (inputNama) => {
+    const cleanName = inputNama.trim().toLowerCase().replace(/\s+/g, '');
+    return `${cleanName}@bencana.local`;
+  };
+
+  async function handleProses() {
+    if (!nama.trim() || !password.trim()) {
+      return setPesan('⚠️ Nama dan sandi harus diisi penuh!');
+    }
+    
+    // Syarat 6 karakter hanya dicek saat sedang mode Daftar
+    if (!isLoginMode && password.length < 6) {
+      return setPesan('⚠️ Kata sandi minimal 6 karakter!');
+    }
+    
     setLoading(true);
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
-    if (error) Alert.alert('Gagal Masuk', error.message);
-    else Alert.alert('Sukses', 'Berhasil masuk ke aplikasi!');
-    setLoading(false);
-  }
-
-  // Fungsi Register Supabase
-  async function signUpWithEmail() {
-    setLoading(true);
-    const { data, error } = await supabase.auth.signUp({
-      email,
-      password,
-      options: {
-        data: {
-          full_name: name,
-          role: role,
-        },
-      },
-    });
-
-    if (error) Alert.alert('Gagal Daftar', error.message);
-    else Alert.alert('Sukses', 'Akun berhasil dibuat! Silakan cek email Anda.');
+    setPesan('');
+    
+    if (isLoginMode) {
+      // PROSES LOGIN
+      const { error } = await supabase.auth.signInWithPassword({
+        email: formatEmail(nama),
+        password: password,
+      });
+      if (error) setPesan('❌ Gagal: Nama atau sandi salah.');
+    } else {
+      // PROSES DAFTAR (REGISTER)
+      const { error } = await supabase.auth.signUp({
+        email: formatEmail(nama),
+        password: password,
+      });
+      if (error) {
+        if (error.message.includes('already registered')) {
+          setPesan('❌ Nama sudah dipakai, gunakan nama lain.');
+        } else {
+          setPesan(`❌ Gagal: ${error.message}`);
+        }
+      } else {
+        setPesan('✅ Akun berhasil dibuat! Memuat dasbor...');
+      }
+    }
+    
     setLoading(false);
   }
 
   return (
-    <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.container}>
-      <View style={styles.innerContainer}>
-        {/* Header Sesuai Desain Figma */}
-        <View style={styles.header}>
-          <Text style={styles.logoIcon}>🛡️</Text>
-          <Text style={styles.title}>{isLogin ? 'TANGGAP KRISIS' : 'Bergabung dengan Jaringan'}</Text>
-          <Text style={styles.subtitle}>{isLogin ? 'Akses layanan darurat yang aman.' : 'Daftar untuk memberikan atau menerima bantuan.'}</Text>
-        </View>
+    <View style={styles.container}>
+      <View style={styles.box}>
+        <Text style={styles.title}>
+          {isLoginMode ? 'Pintu Masuk Relawan' : 'Daftar Relawan Baru'}
+        </Text>
+        <Text style={styles.subtitle}>
+          {isLoginMode ? 'Gunakan nama yang sudah terdaftar' : 'Buat nama unik yang mudah diingat'}
+        </Text>
 
-        {/* Form Register Khusus */}
-        {!isLogin && (
-          <View style={styles.inputGroup}>
-            <Text style={styles.label}>Nama Lengkap</Text>
-            <TextInput style={styles.input} onChangeText={setName} value={name} placeholder="Jane Doe" placeholderTextColor="#9ca3af" />
-          </View>
-        )}
-
-        {/* Input Email & Password */}
-        <View style={styles.inputGroup}>
-          <Text style={styles.label}>Alamat Email</Text>
-          <TextInput style={styles.input} onChangeText={setEmail} value={email} placeholder="email@jaringan.org" placeholderTextColor="#9ca3af" autoCapitalize="none" keyboardType="email-address" />
-        </View>
+        <TextInput
+          style={styles.input}
+          onChangeText={(text) => setNama(text)}
+          value={nama}
+          placeholder="Masukkan Nama (contoh: budi)"
+          placeholderTextColor="#9ca3af"
+          autoCapitalize="none"
+        />
         
-        <View style={styles.inputGroup}>
-          <Text style={styles.label}>Kata Sandi</Text>
-          <TextInput style={styles.input} onChangeText={setPassword} value={password} secureTextEntry placeholder="••••••••" placeholderTextColor="#9ca3af" autoCapitalize="none" />
-        </View>
+        <TextInput
+          style={styles.input}
+          onChangeText={(text) => setPassword(text)}
+          value={password}
+          secureTextEntry
+          placeholder="Kata Sandi (minimal 6 karakter)"
+          placeholderTextColor="#9ca3af"
+          autoCapitalize="none"
+        />
 
-        {/* Pilihan Peran Khusus Register */}
-        {!isLogin && (
-          <View style={styles.inputGroup}>
-            <Text style={styles.label}>Peran Utama</Text>
-            <View style={styles.roleContainer}>
-              <TouchableOpacity style={[styles.roleButton, role === 'Relawan' && styles.roleActive]} onPress={() => setRole('Relawan')}>
-                <Text style={styles.roleText}>Relawan</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={[styles.roleButton, role === 'Penerima' && styles.roleActive]} onPress={() => setRole('Penerima')}>
-                <Text style={styles.roleText}>Penerima</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        )}
+        {pesan ? <Text style={styles.pesanText}>{pesan}</Text> : null}
 
-        {/* Tombol Aksi Utama */}
-        <TouchableOpacity style={styles.mainButton} onPress={isLogin ? signInWithEmail : signUpWithEmail} disabled={loading}>
-          {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.buttonText}>{isLogin ? 'Masuk ➔' : 'Buat Akun ➔'}</Text>}
+        <TouchableOpacity style={styles.btnPrimary} onPress={handleProses} disabled={loading}>
+          {loading ? (
+            <ActivityIndicator color="#fff" />
+          ) : (
+            <Text style={styles.btnText}>{isLoginMode ? 'Masuk' : 'Buat Akun'}</Text>
+          )}
         </TouchableOpacity>
 
-        {/* Teks Toggle Bawah */}
-        <TouchableOpacity style={styles.toggleButton} onPress={() => setIsLogin(!isLogin)}>
-          <Text style={styles.toggleText}>
-            {isLogin ? 'Belum punya akun? Daftar' : 'Sudah punya akun? Masuk'}
+        {/* Tombol saklar untuk pindah halaman Login/Register */}
+        <TouchableOpacity 
+          style={styles.btnSwitch} 
+          onPress={() => {
+            setIsLoginMode(!isLoginMode); // Balikkan mode
+            setPesan(''); // Hapus pesan error sebelumnya
+            setNama(''); // Kosongkan kolom input
+            setPassword('');
+          }}
+        >
+          <Text style={styles.btnSwitchText}>
+            {isLoginMode 
+              ? 'Belum punya akun? Daftar di sini' 
+              : 'Sudah punya akun? Masuk di sini'}
           </Text>
         </TouchableOpacity>
       </View>
-    </KeyboardAvoidingView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#121212' },
-  innerContainer: { flex: 1, justifyContent: 'center', padding: 24 },
-  header: { alignItems: 'center', marginBottom: 32 },
-  logoIcon: { fontSize: 40, marginBottom: 12 },
-  title: { fontSize: 22, fontWeight: 'bold', color: '#ffffff', marginBottom: 8, textAlign: 'center' },
-  subtitle: { fontSize: 14, color: '#9ca3af', textAlign: 'center' },
-  inputGroup: { marginBottom: 16 },
-  label: { color: '#ffffff', fontSize: 12, marginBottom: 8, textTransform: 'uppercase' },
-  input: { backgroundColor: '#1f2937', color: '#ffffff', padding: 14, borderRadius: 8, fontSize: 16 },
-  roleContainer: { flexDirection: 'row', justifyContent: 'space-between' },
-  roleButton: { flex: 1, padding: 14, backgroundColor: '#1f2937', borderRadius: 8, marginHorizontal: 4, alignItems: 'center', borderWidth: 1, borderColor: '#374151' },
-  roleActive: { borderColor: '#dc2626', backgroundColor: '#450a0a' },
-  roleText: { color: '#ffffff', fontWeight: 'bold' },
-  mainButton: { backgroundColor: '#dc2626', padding: 16, borderRadius: 8, alignItems: 'center', marginTop: 12 },
-  buttonText: { color: '#ffffff', fontWeight: 'bold', fontSize: 16 },
-  toggleButton: { marginTop: 24, alignItems: 'center' },
-  toggleText: { color: '#dc2626', fontSize: 14 },
+  container: { flex: 1, backgroundColor: '#121212', justifyContent: 'center', padding: 20 },
+  box: { backgroundColor: '#1f2937', padding: 24, borderRadius: 12, borderWidth: 1, borderColor: '#374151' },
+  title: { color: '#ffffff', fontSize: 22, fontWeight: 'bold', textAlign: 'center', marginBottom: 4 },
+  subtitle: { color: '#9ca3af', fontSize: 13, textAlign: 'center', marginBottom: 20 },
+  input: { backgroundColor: '#111827', color: '#ffffff', padding: 14, borderRadius: 8, marginBottom: 12, borderWidth: 1, borderColor: '#374151' },
+  pesanText: { color: '#fca5a5', fontSize: 13, textAlign: 'center', marginBottom: 16, fontWeight: 'bold' },
+  btnPrimary: { backgroundColor: '#dc2626', padding: 14, borderRadius: 8, alignItems: 'center', marginBottom: 16 },
+  btnText: { color: '#ffffff', fontWeight: 'bold', fontSize: 16 },
+  btnSwitch: { padding: 10, alignItems: 'center' },
+  btnSwitchText: { color: '#60a5fa', fontWeight: 'bold', fontSize: 14, textDecorationLine: 'underline' }
 });
