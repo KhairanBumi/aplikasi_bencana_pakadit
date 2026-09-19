@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { SafeAreaView, StatusBar, View, Text, TouchableOpacity, StyleSheet, FlatList, Share, TextInput, Image, ScrollView, RefreshControl, Modal, Alert } from 'react-native';
+import { SafeAreaView, StatusBar, View, Text, TouchableOpacity, StyleSheet, FlatList, TextInput, Image, ScrollView, RefreshControl, Modal, Alert } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from './supabase';
 import Auth from './Auth';
@@ -18,6 +18,14 @@ const deteksiPulau = (wilayah) => {
   return 'Lainnya';
 };
 
+const daftarYayasan = ['PMI', 'Dompet Dhuafa', 'Baznas', 'Kitabisa'];
+const daftarLogistik = [
+  { id: 'sembako', nama: 'Sembako', satuan: 'Paket', icon: '📦' },
+  { id: 'pakaian', nama: 'Pakaian', satuan: 'Dus', icon: '👕' },
+  { id: 'tenda', nama: 'Tenda', satuan: 'Unit', icon: '⛺' },
+  { id: 'obat', nama: 'Obat-obatan', satuan: 'Box', icon: '💊' }
+];
+
 function MainApp({ session }) {
   const [bencana, setBencana] = useState([]);
   const [totalDonasi, setTotalDonasi] = useState(0);
@@ -26,50 +34,46 @@ function MainApp({ session }) {
   const [kataKunci, setKataKunci] = useState('');
   const [refreshing, setRefreshing] = useState(false);
 
+  // Modal State
   const [modalDonasiVisible, setModalDonasiVisible] = useState(false);
   const [gempaTerpilih, setGempaTerpilih] = useState(null);
+  const [yayasanTerpilih, setYayasanTerpilih] = useState(null);
+  const [tipeDonasi, setTipeDonasi] = useState('uang'); // 'uang' atau 'logistik'
+  
+  // State Uang
   const [inputNominal, setInputNominal] = useState('');
   
+  // State Logistik
+  const [barangTerpilih, setBarangTerpilih] = useState(null);
+  const [jumlahBarang, setJumlahBarang] = useState('');
+  
+  // Admin State
   const [modalAdminVisible, setModalAdminVisible] = useState(false);
   const [pinInput, setPinInput] = useState('');
   const [pesanAdmin, setPesanAdmin] = useState('');
+  const [resetGempaId, setResetGempaId] = useState(null);
 
   const fetchData = async () => {
     setRefreshing(true);
     try {
-      // 1. Tarik data Auto Gempa HANYA untuk mengamankan 1 gambar pasti dari BMKG
       const resAuto = await fetch('https://data.bmkg.go.id/DataMKG/TEWS/autogempa.json');
       const dataAuto = await resAuto.json();
       const gambarUtama = dataAuto?.Infogempa?.gempa?.Shakemap || '';
 
-      // 2. Tarik daftar gempa besar (Biasanya memiliki gambar)
       const resTerkini = await fetch('https://data.bmkg.go.id/DataMKG/TEWS/gempaterkini.json');
       const dataTerkini = await resTerkini.json();
       const listTerkini = dataTerkini.Infogempa.gempa || [];
 
-      // 3. Tarik daftar gempa kecil/dirasakan (Sering kali TIDAK memiliki gambar)
       const resDirasakan = await fetch('https://data.bmkg.go.id/DataMKG/TEWS/gempadirasakan.json');
       const dataDirasakan = await resDirasakan.json();
       const listDirasakan = dataDirasakan.Infogempa.gempa || [];
 
-      // 4. Gabungkan daftar dan suntikkan gambar secara cerdas
       const gabungan = [...listTerkini, ...listDirasakan].map(item => {
-        // Jika data item memiliki file .jpg, gunakan file tersebut. 
-        // Jika kosong (karena BMKG tidak buatkan), pinjam gambar dari Auto Gempa!
-        const fileGambar = (item.Shakemap && item.Shakemap.includes('.jpg')) 
-          ? item.Shakemap 
-          : gambarUtama;
-          
-        return { 
-          ...item, 
-          ShakemapURL: `https://data.bmkg.go.id/DataMKG/TEWS/${fileGambar}` 
-        };
+        const fileGambar = (item.Shakemap && item.Shakemap.includes('.jpg')) ? item.Shakemap : gambarUtama;
+        return { ...item, ShakemapURL: `https://data.bmkg.go.id/DataMKG/TEWS/${fileGambar}` };
       });
 
-      // 5. Hapus data ganda (jika ada gempa yang muncul di kedua list API)
       const dataUnik = Array.from(new Map(gabungan.map(item => [item.DateTime, item])).values());
-      
-      // 6. Urutkan kembali berdasarkan waktu dari yang paling baru
       dataUnik.sort((a, b) => new Date(b.DateTime) - new Date(a.DateTime));
 
       setBencana(dataUnik);
@@ -96,50 +100,90 @@ function MainApp({ session }) {
     return bersihkanNonAngka.replace(/\B(?=(\d{3})+(?!\d))/g, '.');
   };
 
-  const handleInputNominal = (teks) => {
-    setInputNominal(formatAngkaRibuan(teks));
-  };
-
   const eksekusiDonasiKustom = async () => {
-    const angkaAsli = parseInt(inputNominal.replace(/\./g, ''), 10);
+    if (!yayasanTerpilih) return Alert.alert('Peringatan', 'Silakan pilih yayasan penyalur terlebih dahulu!');
+    if (!gempaTerpilih) return;
+
+    const idGempa = gempaTerpilih.DateTime;
+    const namaRelawan = session?.user?.email ? session.user.email.split('@')[0] : 'Anonim';
     
-    if (!angkaAsli || angkaAsli <= 0) {
-      return Alert.alert('Peringatan', 'Masukkan nominal donasi yang valid!');
+    const dataLama = donasiLokal[idGempa] || { total: 0, riwayat: [] };
+    const totalLama = typeof dataLama === 'number' ? dataLama : (dataLama.total || 0);
+    const riwayatLama = dataLama.riwayat || [];
+
+    let objekRiwayatBaru = { 
+      nama: namaRelawan, 
+      waktu: new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute:'2-digit' }),
+      yayasan: yayasanTerpilih,
+      tipe: tipeDonasi
+    };
+
+    let totalBaru = totalLama; // Total Rp wilayah
+    let akumulasiTotalNasional = totalDonasi; // Total Rp nasional
+
+    if (tipeDonasi === 'uang') {
+      const angkaAsli = parseInt(inputNominal.replace(/\./g, ''), 10);
+      if (!angkaAsli || angkaAsli <= 0) return Alert.alert('Peringatan', 'Masukkan nominal donasi yang valid!');
+      
+      objekRiwayatBaru.nominal = angkaAsli;
+      totalBaru += angkaAsli;
+      akumulasiTotalNasional += angkaAsli;
+
+    } else {
+      if (!barangTerpilih) return Alert.alert('Peringatan', 'Pilih jenis logistik yang didonasikan!');
+      const jml = parseInt(jumlahBarang, 10);
+      if (!jml || jml <= 0) return Alert.alert('Peringatan', 'Masukkan jumlah barang yang valid!');
+      
+      objekRiwayatBaru.barang = barangTerpilih.nama;
+      objekRiwayatBaru.jumlah = jml;
+      objekRiwayatBaru.satuan = barangTerpilih.satuan;
+      objekRiwayatBaru.icon = barangTerpilih.icon;
     }
 
-    if (!gempaTerpilih) return;
-    const idGempa = gempaTerpilih.DateTime;
+    const donasiWilayahBaru = { total: totalBaru, riwayat: [objekRiwayatBaru, ...riwayatLama] };
+    const donasiLokalBaru = { ...donasiLokal, [idGempa]: donasiWilayahBaru };
     
-    const totalBaru = totalDonasi + angkaAsli;
-    const donasiLokalBaru = {
-      ...donasiLokal,
-      [idGempa]: (donasiLokal[idGempa] || 0) + angkaAsli
-    };
-    
-    setTotalDonasi(totalBaru);
+    setTotalDonasi(akumulasiTotalNasional);
     setDonasiLokal(donasiLokalBaru);
     
-    await AsyncStorage.setItem('totalDonasi', totalBaru.toString());
+    await AsyncStorage.setItem('totalDonasi', akumulasiTotalNasional.toString());
     await AsyncStorage.setItem('donasiLokal', JSON.stringify(donasiLokalBaru));
     
+    // Reset Modal State
     setModalDonasiVisible(false);
     setGempaTerpilih(null);
     setInputNominal('');
+    setJumlahBarang('');
+    setBarangTerpilih(null);
+    setYayasanTerpilih(null);
+    setTipeDonasi('uang');
     
-    Alert.alert('Terima Kasih!', `Donasi Rp${angkaAsli.toLocaleString('id-ID')} berhasil disalurkan.`);
+    Alert.alert('Terima Kasih!', `Donasi Anda via ${yayasanTerpilih} telah dicatat dalam sistem.`);
   };
 
   const handleResetAdmin = async () => {
     if (pinInput.trim() === '1234') {
-      setTotalDonasi(0);
-      setDonasiLokal({});
-      await AsyncStorage.removeItem('totalDonasi');
-      await AsyncStorage.removeItem('donasiLokal');
+      if (resetGempaId) {
+        const dataLama = donasiLokal[resetGempaId];
+        const uangDihapus = typeof dataLama === 'number' ? dataLama : (dataLama?.total || 0);
+        
+        const donasiLokalBaru = { ...donasiLokal };
+        delete donasiLokalBaru[resetGempaId];
+        
+        const totalBaru = Math.max(0, totalDonasi - uangDihapus);
+
+        setTotalDonasi(totalBaru);
+        setDonasiLokal(donasiLokalBaru);
+        await AsyncStorage.setItem('totalDonasi', totalBaru.toString());
+        await AsyncStorage.setItem('donasiLokal', JSON.stringify(donasiLokalBaru));
+        
+        Alert.alert('Berhasil', 'Data donasi wilayah ini telah direset.');
+      }
       setPinInput('');
       setPesanAdmin('');
       setModalAdminVisible(false);
+      setResetGempaId(null);
     } else {
-      // Peringatan dibuat tegas tanpa membocorkan PIN
       setPesanAdmin('PIN Admin salah');
     }
   };
@@ -148,17 +192,26 @@ function MainApp({ session }) {
     await supabase.auth.signOut();
   };
 
-  const hitungStatistikPulau = () => {
-    const stats = { Semua: bencana.length };
-    bencana.forEach(item => {
-      const pulau = deteksiPulau(item.Wilayah);
-      stats[pulau] = (stats[pulau] || 0) + 1;
-    });
-    return stats;
+  const renderRiwayatItem = (rw, index) => {
+    if (rw.tipe === 'logistik') {
+      return (
+        <View key={index} style={styles.riwayatItemRow}>
+          <Text style={styles.riwayatItemText}>
+            👤 {rw.nama.toUpperCase()} <Text style={{fontSize: 10, color: '#9ca3af'}}>(via {rw.yayasan})</Text>
+          </Text>
+          <Text style={styles.riwayatItemLogistik}>{rw.icon} +{rw.jumlah} {rw.satuan} {rw.barang}</Text>
+        </View>
+      );
+    }
+    return (
+      <View key={index} style={styles.riwayatItemRow}>
+        <Text style={styles.riwayatItemText}>
+          👤 {rw.nama.toUpperCase()} <Text style={{fontSize: 10, color: '#9ca3af'}}>(via {rw.yayasan || 'Umum'})</Text>
+        </Text>
+        <Text style={styles.riwayatItemUang}>+Rp {(rw.nominal || 0).toLocaleString('id-ID')}</Text>
+      </View>
+    );
   };
-
-  const statsPulau = hitungStatistikPulau();
-  const daftarPulauDinamis = ['Semua', ...Object.keys(statsPulau).filter(k => k !== 'Semua' && k !== 'Lainnya')];
 
   const renderItem = ({ item }) => {
     const idGempa = item.DateTime;
@@ -167,45 +220,66 @@ function MainApp({ session }) {
     if (filterAktif !== 'Semua' && pulau !== filterAktif) return null;
     if (kataKunci && !item.Wilayah.toLowerCase().includes(kataKunci.toLowerCase())) return null;
 
+    const dataWilayah = donasiLokal[idGempa] || { total: 0, riwayat: [] };
+    const totalWilayah = typeof dataWilayah === 'number' ? dataWilayah : (dataWilayah.total || 0);
+    const riwayatWilayah = dataWilayah.riwayat || [];
+
     return (
       <View style={styles.card}>
-        {/* Gambar dijamin muncul karena logika suntik gambar (ShakemapURL) di atas */}
         <Image source={{ uri: item.ShakemapURL }} style={styles.cardImage} resizeMode="cover" />
-        
         <View style={styles.cardContent}>
           <View style={styles.tagRow}>
             <View style={styles.tagPrimary}><Text style={styles.tagText}>⚡ BMKG REAL-TIME</Text></View>
             <View style={styles.tagSecondary}><Text style={styles.tagText}>🏝️ Pulau {pulau}</Text></View>
           </View>
-
           <Text style={styles.cardTitle}>Gempa M {item.Magnitude} - {item.Wilayah}</Text>
           <Text style={styles.cardSubtitle}>📍 Kedalaman {item.Kedalaman} | {item.Jam}, {item.Tanggal}</Text>
-
           <View style={styles.localDonationBox}>
-            <Text style={styles.localDonationLabel}>Terkumpul di Lokasi Ini:</Text>
-            <Text style={styles.localDonationValue}>Rp {(donasiLokal[idGempa] || 0).toLocaleString('id-ID')}</Text>
+            <View style={styles.rowBetween}>
+              <View>
+                <Text style={styles.localDonationLabel}>Terkumpul Dana Lokal:</Text>
+                <Text style={styles.localDonationValue}>Rp {totalWilayah.toLocaleString('id-ID')}</Text>
+              </View>
+              <TouchableOpacity style={styles.btnResetWilayah} onPress={() => { setResetGempaId(idGempa); setPesanAdmin(''); setPinInput(''); setModalAdminVisible(true); }}>
+                <Text style={styles.btnResetWilayahText}>⚙️ Reset</Text>
+              </TouchableOpacity>
+            </View>
+            {riwayatWilayah.length > 0 && (
+              <View style={styles.riwayatContainer}>
+                <Text style={styles.riwayatTitle}>Riwayat Bantuan Masuk:</Text>
+                {riwayatWilayah.map((rw, index) => renderRiwayatItem(rw, index))}
+              </View>
+            )}
           </View>
-
-          <Text style={styles.techDataTitle}>Data Teknis:</Text>
-          <Text style={styles.techData}>• Koordinat: {item.Coordinates}</Text>
-          <Text style={styles.techData}>• Info: {item.Dirasakan || 'Tidak ada laporan khusus'}</Text>
-
           <View style={styles.actionRow}>
             <TouchableOpacity style={styles.btnDonate} onPress={() => { 
               setGempaTerpilih(item); 
               setInputNominal('');
+              setJumlahBarang('');
+              setBarangTerpilih(null);
+              setYayasanTerpilih(null);
+              setTipeDonasi('uang');
               setModalDonasiVisible(true); 
             }}>
-              <Text style={styles.btnDonateText}>❤️ Salurkan Donasi</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.btnShare} onPress={() => Share.share({ message: `Info Bencana: Gempa M${item.Magnitude} di ${item.Wilayah}.` })}>
-              <Text style={styles.btnShareText}>📣 Share</Text>
+              <Text style={styles.btnDonateText}>❤️ Salurkan Bantuan</Text>
             </TouchableOpacity>
           </View>
         </View>
       </View>
     );
   };
+
+  const statsPulau = hitungStatistikPulau(bencana);
+  const daftarPulauDinamis = ['Semua', ...Object.keys(statsPulau).filter(k => k !== 'Semua' && k !== 'Lainnya')];
+
+  function hitungStatistikPulau(data) {
+    const stats = { Semua: data.length };
+    data.forEach(item => {
+      const pulau = deteksiPulau(item.Wilayah);
+      stats[pulau] = (stats[pulau] || 0) + 1;
+    });
+    return stats;
+  }
 
   return (
     <View style={styles.container}>
@@ -220,36 +294,19 @@ function MainApp({ session }) {
       </View>
 
       <View style={styles.dashboardCard}>
-        <Text style={styles.dashboardLabel}>Total Donasi Darurat:</Text>
+        <Text style={styles.dashboardLabel}>Total Donasi Darurat Nasional:</Text>
         <Text style={styles.dashboardValue}>Rp {totalDonasi.toLocaleString('id-ID')}</Text>
-        <TouchableOpacity style={styles.btnReset} onPress={() => {
-          setPesanAdmin(''); 
-          setPinInput('');
-          setModalAdminVisible(true);
-        }}>
-          <Text style={styles.btnResetText}>⚙️ Reset (Admin)</Text>
-        </TouchableOpacity>
       </View>
 
       <View style={styles.searchContainer}>
         <Text style={styles.searchIcon}>🔍</Text>
-        <TextInput
-          style={styles.searchInput}
-          placeholder="Cari lokasi..."
-          placeholderTextColor="#9ca3af"
-          value={kataKunci}
-          onChangeText={setKataKunci}
-        />
+        <TextInput style={styles.searchInput} placeholder="Cari lokasi..." placeholderTextColor="#9ca3af" value={kataKunci} onChangeText={setKataKunci} />
       </View>
 
       <View style={styles.filterWrapper}>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterScroll}>
           {daftarPulauDinamis.map(pulau => (
-            <TouchableOpacity 
-              key={pulau} 
-              onPress={() => setFilterAktif(pulau)} 
-              style={[styles.filterChip, filterAktif === pulau && styles.filterChipActive]}
-            >
+            <TouchableOpacity key={pulau} onPress={() => setFilterAktif(pulau)} style={[styles.filterChip, filterAktif === pulau && styles.filterChipActive]}>
               <Text style={[styles.filterChipText, filterAktif === pulau && styles.filterChipTextActive]}>
                 {pulau === 'Semua' ? 'Semua' : `Pulau ${pulau}`} ({statsPulau[pulau]})
               </Text>
@@ -267,30 +324,61 @@ function MainApp({ session }) {
         contentContainerStyle={{ paddingBottom: 20 }}
       />
 
-      <TouchableOpacity style={styles.btnLogout} onPress={handleLogout}>
-        <Text style={styles.btnLogoutText}>Keluar Akun</Text>
-      </TouchableOpacity>
+      <TouchableOpacity style={styles.btnLogout} onPress={handleLogout}><Text style={styles.btnLogoutText}>Keluar Akun</Text></TouchableOpacity>
 
-      <Modal visible={modalDonasiVisible} transparent animationType="fade">
+      {/* Modal Donasi (Uang & Logistik) */}
+      <Modal visible={modalDonasiVisible} transparent animationType="slide">
         <View style={styles.modalOverlay}>
           <View style={styles.modalBox}>
-            <Text style={styles.modalTitle}>Masukkan Nominal Donasi</Text>
+            <Text style={styles.modalTitle}>Salurkan Bantuan</Text>
             <Text style={styles.modalSub}>{gempaTerpilih?.Wilayah}</Text>
             
-            <View style={styles.inputRpContainer}>
-              <Text style={styles.rupiahPrefix}>Rp</Text>
-              <TextInput
-                style={styles.inputDonasiKustom}
-                placeholder="0"
-                placeholderTextColor="#6b7280"
-                keyboardType="numeric"
-                value={inputNominal}
-                onChangeText={handleInputNominal}
-              />
+            {/* Tab Navigasi Uang / Barang */}
+            <View style={styles.tabContainer}>
+              <TouchableOpacity style={[styles.tabBtn, tipeDonasi === 'uang' && styles.tabBtnAktif]} onPress={() => setTipeDonasi('uang')}>
+                <Text style={[styles.tabText, tipeDonasi === 'uang' && styles.tabTextAktif]}>💵 Dana/Uang</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[styles.tabBtn, tipeDonasi === 'logistik' && styles.tabBtnAktif]} onPress={() => setTipeDonasi('logistik')}>
+                <Text style={[styles.tabText, tipeDonasi === 'logistik' && styles.tabTextAktif]}>📦 Logistik</Text>
+              </TouchableOpacity>
+            </View>
+
+            {/* Input berdasarkan Tab */}
+            {tipeDonasi === 'uang' ? (
+              <View style={styles.inputRpContainer}>
+                <Text style={styles.rupiahPrefix}>Rp</Text>
+                <TextInput style={styles.inputDonasiKustom} placeholder="0" placeholderTextColor="#6b7280" keyboardType="numeric" value={inputNominal} onChangeText={(text) => setInputNominal(formatAngkaRibuan(text))} />
+              </View>
+            ) : (
+              <View>
+                <View style={styles.logistikGrid}>
+                  {daftarLogistik.map((item) => (
+                    <TouchableOpacity key={item.id} style={[styles.logistikBtn, barangTerpilih?.id === item.id && styles.logistikBtnAktif]} onPress={() => setBarangTerpilih(item)}>
+                      <Text style={styles.logistikIcon}>{item.icon}</Text>
+                      <Text style={[styles.logistikText, barangTerpilih?.id === item.id && styles.logistikTextAktif]}>{item.nama}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+                {barangTerpilih && (
+                  <View style={styles.inputJumlahContainer}>
+                    <Text style={styles.jumlahLabel}>Jumlah ({barangTerpilih.satuan}):</Text>
+                    <TextInput style={styles.inputJumlah} placeholder="0" placeholderTextColor="#6b7280" keyboardType="numeric" value={jumlahBarang} onChangeText={setJumlahBarang} />
+                  </View>
+                )}
+              </View>
+            )}
+
+            <Text style={styles.yayasanLabel}>Pilih Mitra Penyalur:</Text>
+            <View style={styles.yayasanContainer}>
+              {daftarYayasan.map((yayasan) => (
+                <TouchableOpacity key={yayasan} style={[styles.yayasanBtn, yayasanTerpilih === yayasan && styles.yayasanBtnAktif]} onPress={() => setYayasanTerpilih(yayasan)}>
+                  <Text style={[styles.yayasanText, yayasanTerpilih === yayasan && styles.yayasanTextAktif]}>{yayasan}</Text>
+                </TouchableOpacity>
+              ))}
             </View>
 
             <TouchableOpacity style={styles.nominalBtn} onPress={eksekusiDonasiKustom}>
-              <Text style={styles.nominalText}>Kirim Donasi</Text>
+              <Text style={styles.nominalText}>Konfirmasi Penyaluran</Text>
             </TouchableOpacity>
 
             <TouchableOpacity style={styles.modalCloseBtn} onPress={() => setModalDonasiVisible(false)}>
@@ -300,32 +388,15 @@ function MainApp({ session }) {
         </View>
       </Modal>
 
+      {/* Modal Admin */}
       <Modal visible={modalAdminVisible} transparent animationType="fade">
         <View style={styles.modalOverlay}>
           <View style={styles.modalBox}>
-            <Text style={styles.modalTitle}>Verifikasi Admin</Text>
-            <Text style={styles.modalSub}>Masukkan PIN untuk mereset data</Text>
-            
-            <TextInput
-              style={styles.modalInput}
-              placeholder="Masukkan PIN"
-              placeholderTextColor="#9ca3af"
-              secureTextEntry
-              keyboardType="numeric"
-              value={pinInput}
-              onChangeText={(text) => setPinInput(text)}
-            />
-
-            {/* Peringatan error PIN Admin yang tegas (Tidak lagi menampilkan sandi 1234) */}
+            <Text style={styles.modalTitle}>Akses Admin Wilayah</Text>
+            <TextInput style={styles.modalInput} placeholder="Masukkan PIN" placeholderTextColor="#9ca3af" secureTextEntry keyboardType="numeric" value={pinInput} onChangeText={setPinInput} />
             {pesanAdmin ? <Text style={styles.pesanError}>{pesanAdmin}</Text> : null}
-
-            <TouchableOpacity style={styles.nominalBtn} onPress={handleResetAdmin}>
-              <Text style={styles.nominalText}>Konfirmasi Reset</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity style={styles.modalCloseBtn} onPress={() => setModalAdminVisible(false)}>
-              <Text style={styles.modalCloseText}>Batal</Text>
-            </TouchableOpacity>
+            <TouchableOpacity style={styles.nominalBtn} onPress={handleResetAdmin}><Text style={styles.nominalText}>Konfirmasi Reset</Text></TouchableOpacity>
+            <TouchableOpacity style={styles.modalCloseBtn} onPress={() => { setModalAdminVisible(false); setResetGempaId(null); }}><Text style={styles.modalCloseText}>Batal</Text></TouchableOpacity>
           </View>
         </View>
       </Modal>
@@ -338,18 +409,12 @@ export default function App() {
   const [isReady, setIsReady] = useState(false);
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session);
-      setIsReady(true);
-    });
-    const { data: authListener } = supabase.auth.onAuthStateChange((_event, session) => {
-      setSession(session);
-    });
+    supabase.auth.getSession().then(({ data: { session } }) => { setSession(session); setIsReady(true); });
+    const { data: authListener } = supabase.auth.onAuthStateChange((_event, session) => { setSession(session); });
     return () => authListener.subscription.unsubscribe();
   }, []);
 
   if (!isReady) return <View style={{ flex: 1, backgroundColor: '#121212' }} />;
-
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: '#121212' }}>
       <StatusBar barStyle="light-content" />
@@ -365,24 +430,18 @@ const styles = StyleSheet.create({
   headerSubtitle: { color: '#ef4444', fontSize: 12, marginTop: 4 },
   btnRefresh: { borderWidth: 1, borderColor: '#ef4444', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8 },
   btnRefreshText: { color: '#ef4444', fontSize: 12, fontWeight: 'bold' },
-
   dashboardCard: { backgroundColor: '#7f1d1d', borderRadius: 12, padding: 20, alignItems: 'center', marginBottom: 16 },
   dashboardLabel: { color: '#fca5a5', fontSize: 14, marginBottom: 8 },
-  dashboardValue: { color: '#ffffff', fontSize: 32, fontWeight: 'bold', marginBottom: 12 },
-  btnReset: { backgroundColor: '#450a0a', paddingHorizontal: 16, paddingVertical: 8, borderRadius: 20 },
-  btnResetText: { color: '#fca5a5', fontSize: 12 },
-
+  dashboardValue: { color: '#ffffff', fontSize: 32, fontWeight: 'bold', marginBottom: 4 },
   searchContainer: { flexDirection: 'row', backgroundColor: '#1f2937', borderRadius: 10, alignItems: 'center', paddingHorizontal: 12, marginBottom: 16 },
   searchIcon: { fontSize: 16, marginRight: 8 },
   searchInput: { flex: 1, color: '#ffffff', paddingVertical: 12, fontSize: 14 },
-
   filterWrapper: { marginBottom: 16 },
   filterScroll: { flexDirection: 'row', alignItems: 'center' },
   filterChip: { borderWidth: 1, borderColor: '#dc2626', borderRadius: 20, paddingHorizontal: 16, paddingVertical: 8, marginRight: 10 },
   filterChipActive: { backgroundColor: '#ef4444' },
   filterChipText: { color: '#dc2626', fontWeight: 'bold', fontSize: 13 },
   filterChipTextActive: { color: '#ffffff' },
-
   card: { backgroundColor: '#1e293b', borderRadius: 12, marginBottom: 20, overflow: 'hidden' },
   cardImage: { width: '100%', height: 180, backgroundColor: '#0f172a' },
   cardContent: { padding: 16 },
@@ -390,38 +449,61 @@ const styles = StyleSheet.create({
   tagPrimary: { backgroundColor: '#450a0a', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 4, marginRight: 8 },
   tagSecondary: { backgroundColor: '#0f766e', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 4 },
   tagText: { color: '#ffffff', fontSize: 10, fontWeight: 'bold' },
-  
   cardTitle: { color: '#ffffff', fontSize: 18, fontWeight: 'bold', marginBottom: 6 },
   cardSubtitle: { color: '#94a3b8', fontSize: 13, marginBottom: 16 },
-  
   localDonationBox: { backgroundColor: '#0f172a', padding: 12, borderRadius: 8, marginBottom: 16 },
+  rowBetween: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   localDonationLabel: { color: '#94a3b8', fontSize: 12 },
   localDonationValue: { color: '#10b981', fontSize: 16, fontWeight: 'bold', marginTop: 4 },
-
-  techDataTitle: { color: '#ffffff', fontSize: 13, fontWeight: 'bold', marginBottom: 4 },
-  techData: { color: '#94a3b8', fontSize: 13, marginBottom: 2 },
-
+  btnResetWilayah: { backgroundColor: '#450a0a', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 6, borderWidth: 1, borderColor: '#7f1d1d' },
+  btnResetWilayahText: { color: '#fca5a5', fontSize: 11, fontWeight: 'bold' },
+  riwayatContainer: { marginTop: 12, borderTopWidth: 1, borderColor: '#1e293b', paddingTop: 10 },
+  riwayatTitle: { color: '#9ca3af', fontSize: 12, marginBottom: 8, fontWeight: 'bold' },
+  riwayatItemRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4, alignItems: 'center' },
+  riwayatItemText: { color: '#cbd5e1', fontSize: 12, fontWeight: '500', flex: 1 },
+  riwayatItemUang: { color: '#10b981', fontSize: 12, fontWeight: 'bold' },
+  riwayatItemLogistik: { color: '#3b82f6', fontSize: 12, fontWeight: 'bold' },
   actionRow: { flexDirection: 'row', marginTop: 20 },
-  btnDonate: { flex: 1.5, backgroundColor: '#ef4444', paddingVertical: 12, borderRadius: 8, alignItems: 'center', marginRight: 10 },
+  btnDonate: { flex: 1, backgroundColor: '#ef4444', paddingVertical: 12, borderRadius: 8, alignItems: 'center' },
   btnDonateText: { color: '#ffffff', fontWeight: 'bold', fontSize: 14 },
-  btnShare: { flex: 1, backgroundColor: 'transparent', borderWidth: 1, borderColor: '#64748b', paddingVertical: 12, borderRadius: 8, alignItems: 'center' },
-  btnShareText: { color: '#e2e8f0', fontWeight: 'bold', fontSize: 14 },
-
   btnLogout: { backgroundColor: 'transparent', borderWidth: 1, borderColor: '#ef4444', padding: 14, borderRadius: 8, alignItems: 'center', marginTop: 4, marginBottom: 10 },
   btnLogoutText: { color: '#ef4444', fontWeight: 'bold', fontSize: 14 },
-
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'center', alignItems: 'center', padding: 20 },
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.85)', justifyContent: 'center', alignItems: 'center', padding: 20 },
   modalBox: { width: '100%', backgroundColor: '#1f2937', borderRadius: 12, padding: 20, borderWidth: 1, borderColor: '#374151' },
   modalTitle: { color: '#ffffff', fontSize: 18, fontWeight: 'bold', marginBottom: 6, textAlign: 'center' },
   modalSub: { color: '#9ca3af', fontSize: 13, marginBottom: 16, textAlign: 'center' },
   
+  // Tab Styling
+  tabContainer: { flexDirection: 'row', marginBottom: 16, backgroundColor: '#111827', borderRadius: 8, padding: 4 },
+  tabBtn: { flex: 1, paddingVertical: 10, alignItems: 'center', borderRadius: 6 },
+  tabBtnAktif: { backgroundColor: '#374151' },
+  tabText: { color: '#6b7280', fontSize: 14, fontWeight: 'bold' },
+  tabTextAktif: { color: '#ffffff' },
+
   inputRpContainer: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#111827', borderRadius: 8, borderWidth: 1, borderColor: '#374151', marginBottom: 16, paddingHorizontal: 12 },
   rupiahPrefix: { color: '#9ca3af', fontSize: 18, fontWeight: 'bold', marginRight: 8 },
   inputDonasiKustom: { flex: 1, color: '#ffffff', fontSize: 18, fontWeight: 'bold', paddingVertical: 12 },
 
+  // Logistik Styling
+  logistikGrid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', marginBottom: 12 },
+  logistikBtn: { width: '48%', backgroundColor: '#111827', borderWidth: 1, borderColor: '#374151', borderRadius: 8, padding: 12, alignItems: 'center', marginBottom: 10 },
+  logistikBtnAktif: { borderColor: '#3b82f6', backgroundColor: '#1e3a8a' },
+  logistikIcon: { fontSize: 24, marginBottom: 4 },
+  logistikText: { color: '#9ca3af', fontSize: 12, fontWeight: 'bold' },
+  logistikTextAktif: { color: '#60a5fa' },
+  inputJumlahContainer: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16, backgroundColor: '#111827', paddingHorizontal: 12, borderRadius: 8, borderWidth: 1, borderColor: '#374151' },
+  jumlahLabel: { color: '#9ca3af', fontSize: 14, fontWeight: 'bold' },
+  inputJumlah: { color: '#ffffff', fontSize: 16, fontWeight: 'bold', paddingVertical: 12, textAlign: 'right', flex: 1 },
+
+  yayasanLabel: { color: '#9ca3af', fontSize: 12, marginBottom: 8, fontWeight: 'bold' },
+  yayasanContainer: { flexDirection: 'row', flexWrap: 'wrap', marginBottom: 16, justifyContent: 'space-between' },
+  yayasanBtn: { backgroundColor: '#111827', borderWidth: 1, borderColor: '#374151', paddingVertical: 8, paddingHorizontal: 12, borderRadius: 6, width: '48%', marginBottom: 8, alignItems: 'center' },
+  yayasanBtnAktif: { backgroundColor: '#450a0a', borderColor: '#ef4444' },
+  yayasanText: { color: '#9ca3af', fontSize: 12, fontWeight: 'bold' },
+  yayasanTextAktif: { color: '#ef4444' },
   nominalBtn: { backgroundColor: '#dc2626', padding: 12, borderRadius: 8, alignItems: 'center', marginBottom: 10 },
   nominalText: { color: '#ffffff', fontWeight: 'bold', fontSize: 14 },
-  modalInput: { backgroundColor: '#111827', color: '#ffffff', padding: 12, borderRadius: 8, marginBottom: 12, borderWidth: 1, borderColor: '#374151' },
+  modalInput: { backgroundColor: '#111827', color: '#ffffff', padding: 12, borderRadius: 8, marginBottom: 12, borderWidth: 1, borderColor: '#374151', textAlign: 'center', fontSize: 18, letterSpacing: 5 },
   modalCloseBtn: { padding: 10, alignItems: 'center', marginTop: 4 },
   modalCloseText: { color: '#9ca3af', fontWeight: 'bold' },
   pesanError: { color: '#fca5a5', fontSize: 13, textAlign: 'center', marginBottom: 12, fontWeight: 'bold' } 
